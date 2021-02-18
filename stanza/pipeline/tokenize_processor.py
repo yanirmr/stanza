@@ -18,6 +18,14 @@ from stanza.pipeline.external.spacy import SpacyTokenizer
 from stanza.pipeline.external.sudachipy import SudachiPyTokenizer
 from stanza.pipeline.external.pythainlp import PyThaiNLPTokenizer
 
+from stanza.models.tokenization.torch_data import DocsDataset
+from torch.utils.data import DataLoader as TorchDataLoader
+from torch.autograd import Variable
+from stanza.models.tokenization.torch_data import transform
+from tqdm import tqdm
+import numpy as np
+import torch
+
 logger = logging.getLogger('stanza')
 
 # class for running the tokenizer
@@ -91,3 +99,34 @@ class TokenizeProcessor(UDProcessor):
                                    orig_text=raw_text,
                                    no_ssplit=self.config.get('no_ssplit', False))
         return doc.Document(document, raw_text)
+
+    def bulk_process(self, docs, num_workers=8, batch_size=128):
+        """
+        A torch-based bulk-processing pipeline that uses torch dataloader and batch-wise inferencing.
+        """
+
+        """Create the dataset. Includes the transformation to prepare the text."""
+        docs_dset = DocsDataset(docs=docs, transform=transform(self.config, self.vocab))
+
+        """Build a DataLoader from it"""
+        dloader = TorchDataLoader(docs_dset, batch_size=batch_size, num_workers=num_workers)
+
+        self.trainer.model.eval()
+
+        """Push each batch to GPU and perform a feed-forward push through the model"""
+        for batch in tqdm(dloader):
+            """One batch contains batch_size docs"""
+
+            units_tensors = batch[0]
+            features_tensors = batch[1]
+
+            default_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            units_tensors = Variable(units_tensors.cuda(default_device))
+            features_tensors = Variable(features_tensors.cuda(default_device))
+
+            _, predictions = torch.max(self.trainer.model(units_tensors, features_tensors), 1)
+            predictions = predictions.cpu().tolist()
+            #print(predictions)
+
+
+        return []
