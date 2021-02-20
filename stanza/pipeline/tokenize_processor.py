@@ -105,17 +105,17 @@ class TokenizeProcessor(UDProcessor):
         A torch-based bulk-processing pipeline that uses torch dataloader and batch-wise inferencing.
         """
 
-        """Create the dataset. Includes the transformation to prepare the text."""
+        # Create the dataset. Includes the transformation to prepare the text.
         docs_dset = DocsDataset(docs=docs, transform=transform(self.config, self.vocab))
 
-        """Build a DataLoader from it"""
+        # Build a DataLoader from it
         dloader = TorchDataLoader(docs_dset, batch_size=batch_size, num_workers=num_workers)
 
         self.trainer.model.eval()
 
-        """Push each batch to GPU and perform a feed-forward push through the model"""
+        # Push each batch to GPU and perform a feed-forward push through the model
         for batch in tqdm(dloader):
-            """One batch contains batch_size docs"""
+            # One batch contains batch_size docs
 
             units_tensors = batch[0]
             features_tensors = batch[1]
