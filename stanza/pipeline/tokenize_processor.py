@@ -105,6 +105,16 @@ class TokenizeProcessor(UDProcessor):
         A torch-based bulk-processing pipeline that uses torch dataloader and batch-wise inferencing.
         """
 
+        if hasattr(self, '_variant'):
+            return self._variant.bulk_process(docs)
+
+        if self.config.get('pretokenized'):
+            res = []
+            for document in docs:
+                raw_text, document = self.process_pre_tokenized_text(document.text)
+                res.append(doc.Document(document, raw_text))
+            return res
+
         # Create the dataset. Includes the transformation to prepare the text.
         docs_dset = DocsDataset(docs=docs, transform=transform(self.config, self.vocab))
 
