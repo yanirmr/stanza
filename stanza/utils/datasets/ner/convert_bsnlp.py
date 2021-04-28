@@ -91,66 +91,82 @@ def get_sentences(pipeline, annotated, raw):
                 entities[entity] = pieces[2]
 
     tokenized = pipeline(text)
-    regex = "(" + "|".join(re.escape(x) for x in entities.keys()) + ")"
-    regex = re.compile(regex)
+    # The benefit of doing these one at a time, instead of all at once,
+    # is that nested entities won't clobber previously labeled entities.
+    # For example, the file
+    #   training_pl_cs_ru_bg_rc1/annotated/bg/brexit_bg.txt_file_994.out
+    # has each of:
+    #   Северна Ирландия
+    #   Република Ирландия
+    #   Ирландия
+    # By doing the larger ones first, we can detect and skip the ones
+    # we already labeled when we reach the shorter one
+    regexes = [re.compile(re.escape(x)) for x in sorted(entities.keys(), key=len, reverse=True)]
 
     bad_sentences = set()
 
-    for match in regex.finditer(text):
-        start_char, end_char = match.span()
-        # this is inefficient, but for something only run once, it shouldn't matter
-        start_token = None
-        end_token = None
-        for token in tokenized.iter_tokens():
-            # for example, bsnlp2019/raw/nord_stream/bg/nord_stream_bg.txt_file_100.txt
-            # the Solitaire gets stuck with the close quote
-            if token.start_char == start_char:
-                start_token = token
-            if token.end_char == end_char:
-                end_token = token
-                break
-        if start_token is None and end_token is None:
+    for regex in regexes:
+        for match in regex.finditer(text):
+            start_char, end_char = match.span()
+            # this is inefficient, but for something only run once, it shouldn't matter
+            start_token = None
+            start_sloppy = False
+            end_token = None
+            end_sloppy = False
             for token in tokenized.iter_tokens():
-                # training_pl_cs_ru_bg_rc1/raw/bg/brexit_bg.txt_file_1161.txt
-                # there are / between words, and the tokenizer does not handle that
-                if token.start_char <= start_char and token.end_char >= start_char:
+                if token.start_char <= start_char and token.end_char > start_char:
                     start_token = token
+                    if token.start_char != start_char:
+                        start_sloppy = True
                 if token.start_char <= end_char and token.end_char >= end_char:
                     end_token = token
+                    if token.end_char != end_char:
+                        end_sloppy = True
                     break
-            if start_token is None and end_token is None:
+            if start_token is None or end_token is None:
                 raise RuntimeError("Match %s did not align with any tokens in %s" % (match.group(0), raw))
-            else:
-                if start_token:
-                    bad_sentences.add(start_token.sent.id)
-                else:
-                    bad_sentences.add(end_token.sent.id)
+            if not start_token.sent is end_token.sent:
+                bad_sentences.add(start_token.sent.id)
+                bad_sentences.add(end_token.sent.id)
+                print("Warning: match %s spanned sentences %d and %d in document %s" % (match.group(0), start_token.sent.id, end_token.sent.id, raw))
+                continue
+
+            # ids start at 1, not 0, so we have to subtract 1
+            # then the end token is included, so we add back the 1
+            # TODO: verify that this is correct if the language has MWE - cs, pl, for example
+            tokens = start_token.sent.tokens[start_token.id[0]-1:end_token.id[0]]
+            if all(token.ner for token in tokens):
+                # skip matches which have already been made
+                # this has the nice side effect of not complaining if
+                # a smaller match is found after a larger match
+                # earlier set the NER on those tokens
+                continue
+
+            if start_sloppy and end_sloppy:
+                bad_sentences.add(start_token.sent.id)
                 print("Warning: match %s matched in the middle of a token in %s" % (match.group(0), raw))
                 continue
-        if start_token is None:
-            bad_sentences.add(end_token.sent.id)
-            print("Warning: match %s started matching in the middle of a token in %s" % (match.group(0), raw))
-            continue
-        if end_token is None:
-            bad_sentences.add(start_token.sent.id)
-            print("Warning: match %s ended matching in the middle of a token in %s" % (match.group(0), raw))
-            continue
-        if not start_token.sent is end_token.sent:
-            bad_sentences.add(start_token.sent.id)
-            bad_sentences.add(end_token.sent.id)
-            print("Warning: match %s spanned sentences %d and %d in document %s" % (match.group(0), start_token.sent.id, end_token.sent.id, raw))
-            continue
-        # ids start at 1, not 0, so we have to subtract 1
-        # then the end token is included, so we add back the 1
-        # TODO: verify that this is correct if the language has MWE - cs, pl, for example
-        tokens = start_token.sent.tokens[start_token.id[0]-1:end_token.id[0]]
-        match_text = match.group(0)
-        if match_text not in entities:
-            raise RuntimeError("Matched %s, which is not in the entities from %s" % (match_text, annotated))
-        ner_tag = entities[match_text]
-        tokens[0].ner = "B-" + ner_tag
-        for token in tokens[1:]:
-            token.ner = "I-" + ner_tag
+            if start_sloppy:
+                bad_sentences.add(end_token.sent.id)
+                print("Warning: match %s started matching in the middle of a token in %s" % (match.group(0), raw))
+                #print(start_token)
+                #print(end_token)
+                #print(start_char, end_char)
+                continue
+            if end_sloppy:
+                bad_sentences.add(start_token.sent.id)
+                print("Warning: match %s ended matching in the middle of a token in %s" % (match.group(0), raw))
+                #print(start_token)
+                #print(end_token)
+                #print(start_char, end_char)
+                continue
+            match_text = match.group(0)
+            if match_text not in entities:
+                raise RuntimeError("Matched %s, which is not in the entities from %s" % (match_text, annotated))
+            ner_tag = entities[match_text]
+            tokens[0].ner = "B-" + ner_tag
+            for token in tokens[1:]:
+                token.ner = "I-" + ner_tag
 
     for sentence in tokenized.sentences:
         if not sentence.id in bad_sentences:
